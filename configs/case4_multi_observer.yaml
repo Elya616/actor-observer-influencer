@@ -1,0 +1,18 @@
+case: case4_multi_observer
+seed: 0
+num_steps: 5000
+actor_learning_rate: 0.05
+observer_learning_rate: 0.05
+following_learning_rate: 0.05
+num_observers: 3
+num_states: 4
+observation_dim: 1
+message_dim: 2
+num_actions: 2
+state_distribution: [0.25, 0.25, 0.25, 0.25]
+reward_table:
+  - [1.0, 0.0]
+  - [0.0, 1.0]
+  - [1.0, 0.0]
+  - [0.0, 1.0]
+optimal_actions: [0, 1, 0, 1]

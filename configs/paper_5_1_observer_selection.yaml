@@ -1,0 +1,31 @@
+case: paper_5_1_observer_selection
+
+seed: 0
+num_steps: 5000
+eval_interval: 50
+reward_window: 100
+
+num_observers: 3
+num_states: 4
+observation_dim: 1
+num_actions: 3
+
+state_distribution: [0.25, 0.25, 0.25, 0.25]
+
+reward_table:
+  - [1.0, -0.1, -0.1]
+  - [-0.1, 1.0, -0.1]
+  - [-0.1, 1.0, -0.1]
+  - [-0.1, -0.1, 1.0]
+
+observer_names: [zero, first_feature, sum]
+
+# Scalar message emitted by each fixed Observer for the four binary states:
+# state 0 = (0, 0), state 1 = (1, 0), state 2 = (0, 1), state 3 = (1, 1).
+observer_messages:
+  - [0.0, 0.0, 0.0, 0.0]
+  - [0.0, 1.0, 0.0, 1.0]
+  - [0.0, 1.0, 1.0, 2.0]
+
+following_learning_rate: 0.05
+decoder_sharpness: 4.0

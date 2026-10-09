@@ -1,0 +1,44 @@
+case: paper_6_2_group
+
+# Section 6.2: N Observers x N Actors, joint learning. Both Observers (following
+# rates mu_i) and Actors (softmax policies) learn simultaneously. Actor j's
+# effective reward aggregates over Observers per Eq. (29):
+#   r_eff(j) = sum_i theta(mu_{i,j}) * R_i(s, a).
+# The three Observers share the same reward structure here so the aggregate
+# signal consistently points Actors toward the diagonal optimal actions, giving
+# a clean known-answer convergence target while still exercising the
+# multi-Observer aggregation path.
+
+seed: 0
+num_steps: 40000
+snapshot_interval: 200
+
+num_actors: 3
+num_observers: 3
+num_states: 3
+num_actions: 3
+
+state_distribution: [0.333333333, 0.333333333, 0.333333334]
+actor_selection_probs: [0.333333333, 0.333333333, 0.333333334]
+
+observer_reward_tables:
+  - - [1.0, 0.1, 0.2]
+    - [0.1, 1.0, 0.0]
+    - [0.0, 0.2, 1.0]
+  - - [1.0, 0.1, 0.2]
+    - [0.1, 1.0, 0.0]
+    - [0.0, 0.2, 1.0]
+  - - [1.0, 0.1, 0.2]
+    - [0.1, 1.0, 0.0]
+    - [0.0, 0.2, 1.0]
+
+optimal_actions: [0, 1, 2]
+
+budget: 3.0
+c: 2.0
+utility_learning_rate: 0.2
+following_learning_rate: 0.01
+# Scalar ID + EmbeddingPolicy: N×N joint learning is more sensitive than §4.2.
+# Scale stress (K=3, 60k steps): actor_lr=0.1 → N=8 mean_p_opt=0.875;
+# actor_lr=0.03 → N=8 mean_p_opt=1.000, N=16 ≈0.95. Keep 0.03 in the stable band.
+actor_learning_rate: 0.03

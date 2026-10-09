@@ -1,0 +1,8 @@
+case: case1_single_state
+seed: 0
+num_steps: 1000
+learning_rate: 0.05
+state_dim: 1
+num_actions: 3
+reward_table: [0.0, 1.0, 0.2]
+optimal_action: 1

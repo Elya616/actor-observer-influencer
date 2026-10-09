@@ -1,0 +1,1659 @@
+\documentclass[11pt]{article}
+
+% Compile from the repository root with pdflatex or tectonic.
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath, amssymb}
+\usepackage{booktabs}
+\usepackage{float}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{xcolor}
+
+\graphicspath{{./}{docs/figures/}{figures/}}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=blue,
+  urlcolor=blue,
+  citecolor=blue
+}
+
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0.65em}
+\setlength{\emergencystretch}{2em}
+
+\newcommand{\reportfigure}[3]{%
+  \begin{figure}[H]
+    \centering
+    \includegraphics[width=0.98\linewidth]{#1}
+    \caption{#2}
+    \label{#3}
+  \end{figure}
+}
+\newcommand{\reportprob}{q}
+
+\title{\textbf{Observer--Actor Dynamic: Technical Report}}
+\author{}
+\date{}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+This report presents controlled experiments for the Observer--Actor learning
+framework. Each experiment separates one learned part of the system and records
+both aggregate reward and the specific quantity that part is supposed to learn.
+
+The first two experiments study reward-weighted policy learning in a single fixed
+state and in multiple fully observed states. The one-to-one imperfect-state
+experiment starts the imperfect-state track:
+an Actor-compressor observes the state and sends a scalar message, while an
+Observer acts from that message. The imperfect-reward experiments study a
+single Observer with a limited budget for following many Actors, followed by
+the group-level version with many Observers and imperfect reward functions. The
+imperfect-state experiments then scale the state-information problem: one
+Observer selects among several Actor-compressors, and then several Observers
+each select Actor-compressors and act from their messages.
+\end{abstract}
+
+\tableofcontents
+
+\section{Overview}
+
+The paper studies a setting where the acting object and the information object
+can be different. We call the acting object the Actor. We call the information
+object the Observer. The Actor chooses an action from a policy
+\(\pi_\theta\). The Observer can affect learning either by reporting reward
+information or by sending state information.
+
+There are two main information problems in the report. In the imperfect-reward
+cases, each Actor can see the state and choose actions, but reward feedback
+comes through Observer following. The learned quantities are the following
+rates \(\mu\), estimated Actor utilities \(\hat U\), and in the joint cases
+the Actor policy. In the imperfect-state cases, the direction is different.
+An Actor-compressor sees state information and sends a message
+\(m=f_\phi(s)\). The Observer receives the message, chooses an environmental
+action, and sends reward feedback. In the multi-compressor cases the Observer
+also learns which Actor-compressor to listen to. Those compressor-selection
+probabilities are denoted by \(\lambda\).
+
+The experiments are built as a ladder. First we test plain policy learning.
+Then we add scalar state compression. Then we add selection among
+Actor-compressors. Finally, we add several Observers, each with its own
+selection rule and policy. This order is intended so that, when a joint
+experiment learns poorly, we can tell whether the problem is policy learning, message
+compression, compressor selection, or the coupling between them.
+
+For that reason the report tracks more than reward. Reward says whether the
+system performs well; the learned mappings show which part moved. We also track
+message values, compression weights, following rates,
+compressor-selection probabilities, and per-state action probabilities. A
+result is treated as reliable when both reward and the relevant learned
+quantity move in the expected direction.
+
+\section{Method}
+
+This section fixes the common notation used in the experiments. An Actor policy
+maps its input to action logits. The softmax of those logits gives the action
+probabilities. In a few controlled experiments, the Actor policy is fixed so that
+only the Observer, following rate, or selection rule is being tested. When the
+policy is learned, it is updated from sampled rewards unless the text explicitly
+marks the run as a controlled comparison.
+
+For the action-learning cases, the training loss is
+\[
+  \mathcal{L}_t
+  =
+  -\hat r_t \log \pi_\theta(a_t \mid x_t),
+\]
+where \(\hat r_t\) is the Observer-reported reward, \(x_t\) is the Actor input,
+and \(a_t\) is the sampled action. Minimizing this loss performs stochastic
+gradient ascent on expected reward:
+\[
+  \theta_{t+1}
+  \leftarrow
+  \theta_t
+  +
+  \alpha r_t \nabla_\theta \log \pi_\theta(a_t \mid x_t).
+\]
+
+The policy input differs by case:
+\[
+  x_t =
+  \begin{cases}
+    s_{\mathrm{static}}, & \text{single-state action learning},\\
+    s_t, & \text{state-dependent action learning},\\
+    m_t=f_\phi(s_t), & \text{one-to-one scalar-compression experiments},\\
+    m_t=f_{\phi_{k_t}}(s_t), & \text{multi-compressor imperfect-state experiments}.
+  \end{cases}
+\]
+
+For the imperfect-state experiments, the same sampled reward can update three
+objects. If compressor \(k_t\) is selected and sends
+\(m_t=f_{\phi_{k_t}}(s_t)\), the policy update is
+\[
+  \theta_{t+1}
+  \leftarrow
+  \theta_t
+  +\alpha_\theta r_t
+  \nabla_\theta\log\pi_\theta(a_t\mid m_t).
+\]
+When compression is learned, the selected compressor receives the gradient
+through the policy:
+\[
+  \phi_{k_t,t+1}
+  \leftarrow
+  \phi_{k_t,t}
+  +\alpha_\phi r_t
+  \nabla_m\log\pi_\theta(a_t\mid m_t)
+  \nabla_{\phi_{k_t}}f_{\phi_{k_t}}(s_t).
+\]
+When selection is learned, its logits receive
+\[
+  w_{t+1}
+  \leftarrow
+  w_t+\alpha_w r_t\nabla_w\log\lambda_{k_t}(w_t).
+\]
+Each subsection states which of \(\phi\), \(w\), and \(\theta\) is learned and
+which is fixed.
+
+The imperfect-state experiments are divided into stages. First, in the one-to-one
+case, one Actor-compressor learns a scalar message for one Observer with a
+fixed policy. Next, one Observer selects among several Actor-compressors while
+the selected compressor learns its message. Finally, several Observers each
+select Actor-compressors and act from the received messages. In the learned
+policy experiments, the Observer policy parameters \(\theta\), the
+compressor-selection logits \(w\), and the selected compression parameters
+\(\phi\) can be fixed or learned depending on which part is being tested.
+
+\textbf{Distance-based softmax policy for scalar messages.}
+The learned-policy imperfect-state experiments use a scalar message \(m\). A plain
+linear softmax policy has trouble when one scalar line must be split into many
+action regions. The policy used in the current experiments keeps the scalar message,
+but scores each action by distance from the message to that action's center:
+\[
+  \ell_a(m)=-\beta(m-a)^2,\qquad
+  \pi_\theta(a\mid m)=\operatorname{softmax}(\ell(m))_a .
+\]
+Here \(\ell_a(m)\) is the logit for action \(a\), and \(\beta\) controls how
+sharp the action preference is. For example, if \(K=8\), \(m=5.1\), and
+\(\beta=32\), action 5 receives the largest logit because 5 is the closest
+action center. If state 5 emits \(m=0.2\), the score for the correct action has
+derivative \(-2\beta(m-5)\), which pushes the message back toward 5 during joint
+compression and policy learning.
+
+When there are \(K\) states and \(A<K\) actions, neighboring states share an
+action. We first map the message onto the action scale,
+\[
+  z={A\over K}m+\left({A\over 2K}-{1\over 2}\right),
+  \qquad
+  \ell_a=-\beta(z-a)^2.
+\]
+For example, with \(K=128\) states and \(A=32\) actions, each action covers four
+neighboring states.
+
+The learned-policy scaling experiments use 300k steps,
+\(\epsilon_w=\epsilon_a=0.05\), \(\alpha_\phi=10^{-6}\),
+\(\alpha_w=10^{-4}\), \(\alpha_\theta=3\cdot10^{-5}\), and
+\(\beta=32\), except where a table states another value. Here
+\(\epsilon_w\) is the uniform compressor-selection floor and
+\(\epsilon_a\) is the uniform action-sampling floor:
+\[
+  \widetilde{\pi}(a\mid m)
+  =(1-\epsilon_a)\pi_\theta(a\mid m)+{\epsilon_a\over A}.
+\]
+The learned distributions, rather than the uniform mixtures, provide the
+log-probabilities in the reward-gradient updates.
+
+The imperfect-reward experiments use a separate setup: the state is fully
+observed, and the learned objects are budgeted following rates \(\mu\), utility
+estimates \(\hat U\), and in the joint case Actor policies.
+
+For the first two action-learning experiments, the default learning-rate grid is
+\[
+  \{0.001,\;0.01,\;0.05,\;0.1\},
+\]
+with 5 random seeds and 5000 training steps. Later experiments state their own
+learning rates, random seeds, and training steps. The main reward metric is
+expected reward under the current policy. The figures also report the learned
+quantity required by the case:
+action probabilities in the action-learning experiments, message behavior in the
+one-to-one imperfect-state experiment,
+compressor-selection probabilities and correct-action probability in the
+imperfect-state experiments, and following rates in the imperfect-reward
+experiments.
+
+The tables use consistent metric definitions. Learning rate is the optimizer
+step size. Expected reward is the reward the current stochastic policy would
+receive on average before sampling an action. In one state this is
+\(\sum_a\pi(a\mid x)r(a)\); across states it is also averaged over the state
+distribution. End expected reward is this quantity at the last reported
+training step, averaged over seeds. End sampled reward averages the last 100
+rewards actually sampled during training. High-reward action probability is
+the total probability assigned to the maximum-reward action after averaging
+over the relevant states and selected Observers. Success rate is the fraction
+of seeds reaching at least 95\% of the reward ceiling. Plots show trajectories;
+tables summarize end-of-run behavior.
+
+For example, suppose one state has rewards \(r(0)=0\), \(r(1)=1\), and
+\(r(2)=0.2\), and the current policy assigns probabilities
+\((0.05,0.90,0.05)\). The expected reward is
+\(0.05\cdot0+0.90\cdot1+0.05\cdot0.2=0.91\), even though the next sampled
+reward will be one of \(0\), \(1\), or \(0.2\). In a three-seed run, an
+end expected reward of \(0.96\) means the three end expected rewards average to
+\(0.96\). If the reward ceiling is \(1.0\), a seed is counted as successful
+once it reaches at least \(0.95\). If high-reward action probability is
+\(0.90\), the current policy assigns 90\% probability to the best action after
+receiving the state input or selected compressor message.
+
+\section{Single-State Action Learning}
+
+This case tests the basic policy-gradient update. There is one fixed state
+\(s_{\mathrm{static}}\), three actions, and the reward table is
+\[
+  r(0)=0.0,\qquad r(1)=1.0,\qquad r(2)=0.2.
+\]
+The only learned object is the Actor's action distribution in this one state.
+The objective is
+\[
+  J(\theta)
+  =
+  \mathbb{E}_{a \sim \pi_\theta(\cdot \mid s_{\mathrm{static}})}[r(a)]
+  =
+  \sum_a \pi_\theta(a \mid s_{\mathrm{static}}) r(a).
+\]
+The optimal behavior is to put almost all probability on action 1.
+
+\reportfigure{report_case1_reward_curves}
+  {Single-state reward learning curves. Expected reward gives the policy-level
+  performance, while average sampled reward shows the recent reward actually
+  experienced during training. Curves show the mean over 5 seeds for each
+  learning rate.}
+  {fig:case1-reward-curves}
+
+\reportfigure{report_case1_action_probabilities}
+  {Single-state action probabilities. The probability of the reward-maximizing action rises
+  toward one, while the lower-reward actions lose probability. Curves show the
+  mean over 5 seeds at learning rate \(0.05\).}
+  {fig:case1-action-probs}
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{cccc}
+\toprule
+Learning rate & End expected & End sampled & Success rate \\
+\midrule
+0.001 & 0.772 & 0.795 & 0.00 \\
+0.01  & 0.992 & 0.989 & 1.00 \\
+0.05  & 0.999 & 0.996 & 1.00 \\
+0.1   & 0.999 & 0.998 & 1.00 \\
+\bottomrule
+\end{tabular}
+\caption{Single-state action-learning end-of-run summary over 5 seeds.}
+\label{tab:case1-summary}
+\end{table}
+
+This shows the intended update directly: the learned object is the action
+distribution, and the probability of the best action increases.
+
+\section{State-Dependent Action Learning}
+
+The state-dependent action-learning experiment tests whether the same update can
+learn different actions in different
+fully observed states. There are three states, sampled uniformly, and three
+actions. States are represented as state vectors. The reward structure is:
+\[
+  \begin{array}{c|ccc}
+  & a=0 & a=1 & a=2 \\
+  \hline
+  s=0 & 1.0 & 0.0 & 0.2 \\
+  s=1 & 0.1 & 1.0 & 0.0 \\
+  s=2 & 0.0 & 0.2 & 1.0
+\end{array}
+\]
+
+The learned object is now a conditional policy: for each state, the Actor
+should put high probability on that state's best action.
+
+The objective is
+\[
+\begin{aligned}
+  J(\theta)
+  &=
+  \mathbb{E}_{s \sim D}
+  \left[
+    \mathbb{E}_{a \sim \pi_\theta(\cdot \mid s)}[r(s,a)]
+  \right]
+  \\
+  &=
+  \sum_s D(s) \sum_a \pi_\theta(a \mid s) r(s,a).
+\end{aligned}
+\]
+
+\reportfigure{report_case2_reward_curves}
+  {State-dependent reward learning curves. Expected reward gives the policy-level
+  performance across the uniformly sampled states, while average sampled reward
+  shows the recent reward actually experienced during training. Curves show the
+  mean over 5 seeds for each learning rate.}
+  {fig:case2-reward-curves}
+
+\reportfigure{report_case2_state_probabilities}
+  {State-conditioned action probabilities. Each curve shows the probability assigned to the correct
+  action for one state. The model learns the three state-action relationships
+  while average reward improves. Curves show the mean over 5 seeds
+  at learning rate \(0.05\).}
+  {fig:case2-state-probs}
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{cccc}
+\toprule
+Learning rate & End expected & End sampled & Success rate \\
+\midrule
+0.001 & 0.499 & 0.504 & 0.00 \\
+0.01  & 0.939 & 0.939 & 0.00 \\
+0.05  & 0.991 & 0.986 & 1.00 \\
+0.1   & 0.996 & 0.991 & 1.00 \\
+\bottomrule
+\end{tabular}
+\caption{State-dependent action-learning end-of-run summary over 5 seeds.}
+\label{tab:case2-summary}
+\end{table}
+
+The per-state probability plot shows the internal behavior that the scalar reward
+curve hides: each conditional action distribution learns its own best action.
+
+\section{Imperfect State with One Actor-Compressor and One Observer}
+
+The one-to-one imperfect-state experiment is the first imperfect-state experiment.
+It follows the updated paper
+direction for the state-information side: an Actor-compressor observes the
+state and sends a message, and an Observer acts from that message. This case
+has one Actor-compressor and one Observer. The three experiments learn
+compression \(\phi\) alone, policy \(\theta\) alone, and then
+\(\phi\) and \(\theta\) together.
+
+The controlled state space has \(K\) states, sampled uniformly. State \(k\) is
+represented by a cumulative binary vector with \(k\) ones:
+\[
+\begin{array}{rcl}
+  s_0 &=& [0,0,\ldots,0],\\
+  s_1 &=& [1,0,\ldots,0],\\
+  s_2 &=& [1,1,0,\ldots,0],\\
+      &\vdots& \\
+  s_{K-1} &=& [1,1,\ldots,1,0].
+\end{array}
+\]
+The intended scalar message is the sum of the vector:
+\[
+  m=f_\phi(s_k)\approx \sum_{\ell=1}^K s_{k,\ell}=k.
+\]
+For example, with \(K=5\), state
+\([1,1,1,0,0]\) has sum \(3\), so the useful message is near \(m=3\).
+The correct action is the state index,
+\[
+  a^\star(s_k)=k.
+\]
+Correct actions receive reward \(1.0\), and wrong actions receive \(-0.1\).
+
+\subsection{Compression Only: Learn \(\phi\), Fixed Observer Policy}
+
+The compressor is linear:
+\[
+  f_\phi(s)=u^\top s+b,
+\]
+where \(u\) and \(b\) are learned. The Observer policy is fixed in this
+compression-only experiment. It prefers action \(a\) when the scalar message is near
+that action index:
+\[
+  \ell_a(m)=-\beta(m-a)^2,\qquad
+  \pi(a\mid m)=\operatorname{softmax}(\ell(m))_a .
+\]
+This fixed policy gives \(\phi\) a clear target: state \(k\) should produce a
+message near \(k\).
+
+The main internal quantities are message mean absolute error and message
+\(R^2\). The mean absolute error compares \(f_\phi(s_k)\) with \(k\). The
+\(R^2\) value measures whether the learned messages line up with the true state
+IDs up to an affine rescaling. A value near \(1.0\) means the messages have the
+right ordering and nearly linear spacing. ``Missed states'' counts states whose
+correct-action probability is below \(0.95\).
+
+\reportfigure{updated_section_5_1_scalar_sum_k64_long_curves}
+  {One-to-one scalar-compression learning at \(K=64\). The reward and
+  correct-action probability rise when the compression learning rate is in the
+  stable range. Very small learning rates move slowly, while overly large rates
+  can move the scalar messages too aggressively.}
+  {fig:case3-scalar-k64}
+
+\reportfigure{updated_section_5_1_scalar_sum_k64_long_final_weights}
+  {One-to-one end-of-run compression plot at \(K=64\). The learned scalar messages are
+  plotted against the target state IDs. A near-straight increasing line means
+  the compressor has learned the intended sum-like state message.}
+  {fig:case3-scalar-k64-weights}
+
+\begin{table}[H]
+\centering
+\small
+\resizebox{\linewidth}{!}{%
+\begin{tabular}{cccccccc}
+\toprule
+\(K\) & Steps & Best lr & End expected & Min correct & Missed states & Message MAE & Message \(R^2\) \\
+\midrule
+3   & 30k  & 0.10  & 0.987 & 0.965 & 0.00  & 0.555 & 1.000 \\
+5   & 30k  & 0.05  & 0.977 & 0.965 & 0.00  & 0.277 & 0.988 \\
+8   & 30k  & 0.05  & 0.971 & 0.965 & 0.00  & 0.183 & 0.991 \\
+16  & 30k  & 0.02  & 0.966 & 0.965 & 0.00  & 0.052 & 0.999 \\
+32  & 120k & 0.005 & 0.963 & 0.965 & 0.00  & 0.020 & 1.000 \\
+64  & 240k & 0.005 & 0.962 & 0.965 & 0.00  & 0.010 & 1.000 \\
+\bottomrule
+\end{tabular}
+}
+\caption{One-to-one scalar-compression scaling over 5 seeds. The fixed Observer
+policy has a finite sharpness, so the practical reward ceiling is below
+\(1.0\).}
+\label{tab:case3-scalar-scaling}
+\end{table}
+
+Compression-only learning works through \(K=64\). The learned scalar messages
+line up with the state IDs and the fixed policy selects the correct action with
+high probability.
+
+\subsection{Policy Only: Learn \(\theta\), Fixed Correct Message}
+
+This experiment learns the Observer policy \(\theta\) while the message is fixed
+to the correct scalar value \(m=k\). The Observer receives the right state
+message and only has to learn which action to take from that message. The policy
+uses the distance-based softmax form defined in the Method section.
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{ccccc}
+\toprule
+\(K,A\) & Reward & Correct-action prob. & Msg MAE & Missed states \\
+\midrule
+128, 32 & 1.000 & 1.000 & 0.000 & 0.00 \\
+\bottomrule
+\end{tabular}
+\caption{One-to-one policy-only experiment. The message is fixed to the correct
+state value and only the Observer policy is learned.}
+\label{tab:one-to-one-policy-only}
+\end{table}
+
+\subsection{Compression and Policy: Learn \(\phi,\theta\), Single Message Path}
+
+This experiment learns both the scalar message \(f_\phi(s)\) and the Observer
+policy \(\pi_\theta(a\mid m)\). There is only one Actor-compressor and one
+Observer, so the message path is fixed and the selection variable is absent.
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{ccccc}
+\toprule
+\(K,A\) & Reward & Correct-action prob. & Msg MAE & Missed states \\
+\midrule
+128, 32 & 0.999 & 0.971 & 0.146 & 0.00 \\
+\bottomrule
+\end{tabular}
+\caption{One-to-one compression-and-policy experiment. The scalar message and
+the Observer policy are learned together on the single message path.}
+\label{tab:one-to-one-phi-theta}
+\end{table}
+
+With the distance-based softmax policy, the scalar learned-policy case works at
+\(K=128,A=32\), including the case where \(\phi\) and \(\theta\) learn
+together. This keeps the scalar message setup and uses a policy shape that
+matches the intended sum message.
+
+\section{Imperfect Reward: One Observer and Many Actors}
+
+This section corresponds to the paper's one-Observer imperfect-reward setting.
+Every Actor observes the full state. After an Actor acts, the Observer sees the
+reward for that action and reports it with probability determined by the
+following rate. A single Observer watches \(N\) Actors and has a limited budget
+for deciding which Actors to follow.
+
+A useful way to read this section is as one instructor watching several
+students. The students are the Actors: they produce answers. The instructor is
+the Observer: it estimates which students tend to produce higher-reward
+answers and spends more of its limited following budget on those students.
+This picture is only an intuition, but it matches the roles in the update:
+\(\hat U_j\) estimates Actor \(j\)'s average quality, and \(\mu_j\)
+controls how often the Observer gives that Actor reward feedback.
+
+The new learnable object is the budgeted following-rate vector
+\[
+  \mu = (\mu_1,\dots,\mu_N),\qquad \mu_j \ge 0,\qquad \sum_{j=1}^{N}\mu_j \le B,
+\]
+where \(\mu_j\) is how strongly the Observer follows Actor \(j\). The following
+rate sets the probability that the Observer actually reports the reward it saw,
+\[
+  \reportprob(\mu_j) = 1 - e^{-c\,\mu_j},\qquad c>0,
+\]
+so larger attention means more frequent feedback. The Observer also keeps a
+running utility estimate \(\hat U_j\) of each Actor's average reward. The
+tracked variables for this case are \(\mu_j(t)\) and \(\hat U_j(t)\): the main
+experiment is reward improvement together with Observer reallocation toward the
+genuinely higher-utility Actors.
+
+\textbf{Setup conventions.} The controlled tests use a single state (so each
+fixed Actor's utility is known analytically), three actions, scalar state-ID
+inputs mapped through a learnable embedding, and a hard-coded reward table.
+One Actor \(j_t\sim p\) acts per step with \(p\) uniform; the Observer sees
+only the realized reward of the acting Actor. In the fixed-policy experiment,
+the Actor policies are fixed and only the Observer's \(\mu\) and \(\hat U\)
+are learned. In the joint-learning experiment, each Actor additionally learns
+its softmax policy.
+
+\textbf{Updates.} When Actor \(j\) acts, the utility estimate uses a fast
+stochastic-approximation step
+\[
+  \hat U_{j,t+1} = \hat U_{j,t} + \alpha_U\bigl(r_t - \hat U_{j,t}\bigr),
+\]
+while the following rates take a slower projected-gradient-ascent step on
+\(\sum_j \reportprob(\mu_j)\hat U_j\),
+\[
+  \hat\mu_{j}(t+1) = \mu_j(t) + \alpha_\mu\,\reportprob'(\mu_j(t))\,\hat U_{j,t},
+  \qquad
+  \mu(t+1) = \Pi_{\{\mu\ge 0,\ \sum_j\mu_j\le B\}}\bigl(\hat\mu(t+1)\bigr),
+\]
+with \(\reportprob'(\mu)=c\,e^{-c\mu}\). The projection has a closed form via the
+capped-simplex projection. Two-timescale behavior is obtained by choosing
+\(\alpha_U \gg \alpha_\mu\), so the utilities are accurate before the attention
+moves.
+
+\subsection{Learnable Following Rates with Fixed Actor Policies}
+
+This subsection studies the following-rate update alone. With fixed Actors of
+known utility, projected gradient ascent should move the budget \(B\) toward
+the best Actors.
+
+\textbf{Controlled test 1: one strictly-best Actor.} A single state, three fixed
+Actors, and reward row \(R=[0.9,0.5,0.1]\). Each fixed Actor uses a sharp
+softmax centered on its target action, so the analytical utilities round to
+\([0.9,0.5,0.1]\). We
+use \(B=1\), \(c=2\), \(\alpha_U=0.10\), \(\alpha_\mu=0.02\), and 4000 steps. The
+expected behavior is \(\hat U\to[0.9,0.5,0.1]\), \(\mu\) concentrating on Actor
+0, the low-utility Actor 2 falling to \(\mu_2\approx 0\), and the budget
+binding.
+
+\reportfigure{paper4_1_single_best}
+  {Single-best following-rate result. Left: following rates \(\mu_j(t)\) ---
+  the high-utility Actor 0 gains budget while the low-utility Actor 2 drops to
+  zero. Right: utility estimates \(\hat U_j(t)\) match the dotted analytical
+  utilities. Mean over 5 seeds.}
+  {fig:section4-single-best}
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{lccc}
+\toprule
+Quantity & Actor 0 & Actor 1 & Actor 2 \\
+\midrule
+Analytical utility \(U_j\)        & 0.900 & 0.500 & 0.100 \\
+Final estimate \(\hat U_j\)       & 0.900 & 0.500 & 0.100 \\
+Final following rate \(\mu_j\)    & 0.647 & 0.353 & 0.000 \\
+\bottomrule
+\end{tabular}
+\caption{Single-best following-rate test, mean over 5 seeds. The budget binds
+(\(\sum_j\mu_j=1.000\)) and attention is ordered by true utility
+(\(\mu_0>\mu_1>\mu_2\)).}
+\label{tab:section4-single-best}
+\end{table}
+
+\textbf{Controlled test 2: tie.} The same setup with \(R=[0.9,0.9,0.1]\), so
+Actors 0 and 1 are equally useful and Actor 2 has low utility. The expected
+behavior is that the budget splits across the tied optimal Actors while Actor 2
+loses attention.
+
+\reportfigure{paper4_1_tie}
+  {Following-rate tie result. The two equally useful Actors share the budget
+  symmetrically and the low-utility Actor 2 drops to zero. Because the two top
+  Actors are genuinely symmetric, the across-seed mean equals the per-seed
+  behavior. Mean over 5 seeds.}
+  {fig:section4-tie}
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{lccc}
+\toprule
+Quantity & Actor 0 & Actor 1 & Actor 2 \\
+\midrule
+Analytical utility \(U_j\)        & 0.900 & 0.900 & 0.100 \\
+Final estimate \(\hat U_j\)       & 0.900 & 0.900 & 0.100 \\
+Final following rate \(\mu_j\)    & 0.500 & 0.500 & 0.000 \\
+\bottomrule
+\end{tabular}
+\caption{Following-rate tie test, mean over 5 seeds. Mass leaves the low-utility
+Actor and splits evenly across the tied optimal set.}
+\label{tab:section4-tie}
+\end{table}
+
+Both tests show the learned variables directly: the utility estimates recover
+the true utilities and the following rates move to the high-utility set under
+the budget constraint.
+
+\subsection{Learnable Following Rates and Actor Policies}
+
+Here each Actor also learns. A reported step --- one where the Bernoulli draw
+\(\mathrm{Bernoulli}(\reportprob(\mu_j))\) succeeds --- drives a REINFORCE update
+\[
+  \theta_j \leftarrow \theta_j
+  + \alpha_\theta\, r_t\, \nabla_{\theta_j}\log\pi_{\theta_j}(a_t\mid s_t).
+\]
+The Observer's \(\mu\) and \(\hat U\) update as in the fixed-policy experiment.
+
+\textbf{Setup.} Three states (uniform), three actions, three Actors, reward
+table
+\[
+  R=\begin{pmatrix} 1.0 & 0.1 & 0.2 \\ 0.1 & 1.0 & 0.0 \\ 0.0 & 0.2 & 1.0 \end{pmatrix},
+\]
+optimal actions \([0,1,2]\), \(B=3\), \(c=2\) (so the initial \(\mu=[1,1,1]\)
+gives \(\reportprob(1)\approx 0.865\), meaning most acted steps are reported),
+\(\alpha_U=0.20\),
+\(\alpha_\mu=0.01\), \(\alpha_\theta=0.20\), and 30000 steps. Since every Actor
+can become optimal and the budget is large enough to fund all of them, the
+correct fixed point is each Actor's optimal-action probability approaching one,
+\(\hat U_j\to 1\), and a symmetric allocation \(\mu\to[1,1,1]\).
+
+\reportfigure{paper4_2_joint}
+  {Joint following-rate and Actor-policy learning. Left: per-Actor optimal-action
+  probability climbs to \(\approx 0.999\). Middle: following rates \(\mu_j(t)\)
+  remain near the feasible symmetric allocation. Right: utility estimates
+  \(\hat U_j(t)\) rise toward the per-Actor ceiling of one. Mean over 5 seeds.}
+  {fig:section4-joint}
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{lccc}
+\toprule
+Quantity & Actor 0 & Actor 1 & Actor 2 \\
+\midrule
+Final optimal-action prob.        & 0.999 & 0.999 & 0.999 \\
+Final following rate \(\mu_j\)    & 0.999 & 1.001 & 1.000 \\
+\bottomrule
+\end{tabular}
+\caption{Joint following-rate and Actor-policy learning, mean over 5 seeds.
+All Actors reach
+near-deterministic optimal policies and the budget stays feasible
+(\(\sum_j\mu_j=3.000\)).}
+\label{tab:section4-joint}
+\end{table}
+
+In this controlled setup, joint learning is stable with the two-timescale choice
+(\(\alpha_U\gg\alpha_\mu\)): the fast utility estimate tracks the improving
+Actors, and the slow following-rate update keeps \(\mu\) feasible throughout.
+The figures show the learned quantities directly: policies improve, utilities
+rise, attention stays within budget, and end-of-run reward is high.
+
+\section{Group-Level Interactions: Imperfect Reward}
+
+This section is the paper's group-level imperfect-reward extension of the
+previous one. Instead of a single Observer watching \(N\) Actors, there are now
+\(N\) Observers
+\(O_1,\dots,O_N\) and \(N\) Actors \(A_1,\dots,A_N\). Every Actor still sees the
+state perfectly, but each Observer \(O_i\) now has its \emph{own} reward function
+\(R_i\): when the active Actor performs an action, Observer \(i\) perceives
+reward \(R_i(s_t,a_t)\). Because the \(R_i\) differ, two Observers may value the
+same Actor differently, and each Observer maintains its own budgeted
+following-rate vector \(\mu_i=(\mu_{i,1},\dots,\mu_{i,N})\) and utility estimate
+\(\hat U_{i,j}\).
+
+\textbf{Setup conventions.} As before, the controlled fixed-policy test uses a
+single state, three actions, scalar state-ID inputs mapped through a learnable
+embedding, and hard-coded per-Observer reward tables; one Actor \(j_t\sim p\)
+acts per step with \(p\) uniform. Each Observer maintains its own
+capped-simplex following rates with budget \(B\) and reporting probability
+\(\reportprob(\mu_{i,j})=1-e^{-c\,\mu_{i,j}}\).
+
+\textbf{Updates.} When Actor \(j_t\) acts, every Observer updates its utility
+estimate for that Actor on the fast timescale using its own perceived reward,
+\[
+  \hat U_{i,j_t,t+1} = \hat U_{i,j_t,t}
+  + \alpha_U\bigl(R_i(s_t,a_t) - \hat U_{i,j_t,t}\bigr),
+\]
+and updates its following rates by the same projected gradient ascent as the
+single-Observer case. In the joint-learning setting, Actor \(j\) additionally
+learns from an Observer-aggregated reward (paper Eq.~29),
+\[
+  r_{\mathrm{eff}}(j) = \sum_{i=1}^{N}\reportprob(\mu_{i,j})\,R_i(s_t,a_t),
+  \qquad
+  \theta_j \leftarrow \theta_j
+  + \alpha_\theta\, r_{\mathrm{eff}}(j)\,
+  \nabla_{\theta_j}\log\pi_{\theta_j}(a_t\mid s_t),
+\]
+so an Actor's learning signal reflects both the reward for its action and how
+often Observers report that reward.
+
+\subsection{Multiple Observers and Actors with Learnable Following Rates}
+
+This subsection studies whether each Observer, using its own imperfect reward
+function, reallocates its budget toward the Actors \emph{it} values most while
+Actor policies are fixed.
+
+\textbf{Controlled test: assortative reward.} A single state, three fixed Actors
+(Actor \(j\) pinned to action \(j\)), and three Observers with diagonal reward
+tables \(R_0=[0.9,0.4,0.1]\), \(R_1=[0.1,0.9,0.4]\), \(R_2=[0.4,0.1,0.9]\), so
+Observer \(i\) most values Actor \(i\). We use \(B=2\), \(c=1\),
+\(\alpha_U=0.10\), \(\alpha_\mu=0.05\), and 8000 steps. With these utilities the
+constrained optimum is the closed-form KKT allocation \(\mu=[1.405,0.595,0]\)
+(reordered per Observer): the highest-utility Actor receives the most budget and
+the worst Actor drops to zero.
+
+\reportfigure{paper6_1_assortative}
+  {Assortative following with heterogeneous Observers. Each panel shows one
+  Observer's following rates \(\mu_{i,j}(t)\); every Observer concentrates its
+  budget on the Actor it values most, so the three Observers end with different
+  Actor preferences according to their own reward functions.
+  Mean over 5 seeds.}
+  {fig:section6-assortative}
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{lccc}
+\toprule
+Final following rate \(\mu_{i,j}\) & Actor 0 & Actor 1 & Actor 2 \\
+\midrule
+Observer 0 (\(U=[0.9,0.4,0.1]\)) & 1.405 & 0.595 & 0.000 \\
+Observer 1 (\(U=[0.1,0.9,0.4]\)) & 0.000 & 1.405 & 0.595 \\
+Observer 2 (\(U=[0.4,0.1,0.9]\)) & 0.595 & 0.000 & 1.405 \\
+\bottomrule
+\end{tabular}
+\caption{Assortative following test, mean over 5 seeds. Each Observer's budget
+binds (\(\sum_j\mu_{i,j}=2.000\)) and concentrates on its highest-utility Actor,
+matching the analytical KKT allocation.}
+\label{tab:section6-assortative}
+\end{table}
+
+The empirical following rates match the analytical allocation, and the three
+Observers move toward three different Actors. This is the group-level experiment:
+different reward functions produce different budget allocations.
+
+\subsection{Multiple Observers and Actors with Joint Learning}
+
+Here each Actor also learns, using the Observer-aggregated reward
+\(r_{\mathrm{eff}}(j)=\sum_i\reportprob(\mu_{i,j})R_i\) defined above.
+
+\textbf{Setup.} Three states (uniform), three actions, three Actors, and three
+Observers sharing the diagonal reward table
+\[
+  R=\begin{pmatrix} 1.0 & 0.1 & 0.2 \\ 0.1 & 1.0 & 0.0 \\ 0.0 & 0.2 & 1.0 \end{pmatrix},
+\]
+optimal actions \([0,1,2]\), \(B=3\), \(c=2\), \(\alpha_U=0.20\),
+\(\alpha_\mu=0.01\), \(\alpha_\theta=0.10\), and 30000 steps. Because all Actors
+can become optimal, they become equally valuable to every Observer, so the
+correct fixed point is each Actor's optimal-action probability approaching one
+and a symmetric allocation \(\mu_i\to[1,1,1]\) for every Observer.
+
+\reportfigure{paper6_2_joint}
+  {Group-level joint learning. Left: per-Actor optimal-action probability climbs
+  to \(\approx 0.999\) under the Observer-aggregated reward. Middle: Observer~0's
+  following rates \(\mu_{0,j}(t)\) stay near the feasible symmetric allocation.
+  Right: Observer~0's utility estimates \(\hat U_{0,j}(t)\) rise toward the
+  per-Actor ceiling of one. Mean over 5 seeds.}
+  {fig:section6-joint}
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{lccc}
+\toprule
+Quantity & Actor 0 & Actor 1 & Actor 2 \\
+\midrule
+Final optimal-action prob.            & 0.999 & 0.999 & 0.999 \\
+Final following rate \(\mu_{i,j}\) (any \(i\)) & 1.000 & 1.000 & 1.000 \\
+\bottomrule
+\end{tabular}
+\caption{Group-level joint learning, mean over 5 seeds. All Actors reach
+near-deterministic optimal policies under the aggregated reward, and every
+Observer's budget stays feasible (\(\sum_j\mu_{i,j}=3.000\)).}
+\label{tab:section6-joint}
+\end{table}
+
+In this controlled setup, joint group learning is stable with the two-timescale
+choice. The aggregated reward \(\sum_i\reportprob(\mu_{i,j})R_i\) trains the
+Actors, and every Observer's following rates stay within budget.
+\section{Imperfect State with Multiple Actor-Compressors and One Observer}
+
+This section is the one-Observer, many-compressor imperfect-state setting. One
+Observer chooses which Actor-compressor to listen to, receives that scalar
+message, and then acts. The three Actor-compressors are:
+\[
+\begin{array}{c|c|c}
+\text{Compressor} & \text{state input} & \text{role} \\
+\hline
+0 & \text{zero vector} & \text{uninformative baseline} \\
+1 & \text{first coordinate only} & \text{partial state information} \\
+2 & \text{full cumulative state vector} & \text{can identify the state}.
+\end{array}
+\]
+The Observer has selection logits \(w\), with selection probabilities
+\[
+  \lambda_i(w)=\frac{\exp(w_i)}{\sum_\ell \exp(w_\ell)}.
+\]
+During training we sample from a distribution with a small uniform floor,
+\[
+  \tilde\lambda_i=(1-\epsilon_w)\lambda_i+\frac{\epsilon_w}{N},
+\]
+where \(N\) is the number of Actor-compressors. This keeps every compressor
+sampled sometimes, while the reported \(P(\mathrm{full})\) remains the learned
+probability \(\lambda_2\).
+
+\subsection{Compression Only: Learn \(\phi\), Fixed Full Selection and Fixed Policy}
+
+This experiment fixes the Observer to listen to the full-information compressor
+and fixes the Observer policy. The only learned object is the full compressor's
+message rule \(f_{\phi_2}\).
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{ccccc}
+\toprule
+\(K\) & Reward & \(P(\mathrm{full})\) & Correct-action prob. & Missed@0.90 \\
+\midrule
+64 & 0.962 & 1.000 & 0.965 & 0.00 \\
+\bottomrule
+\end{tabular}
+\caption{One-to-many compression-only experiment. Selection and policy are
+fixed, and only the full compressor message is learned.}
+\label{tab:one-to-many-phi-only}
+\end{table}
+
+\subsection{Selection Only: Learn \(w\), Fixed Correct Messages and Fixed Policy}
+
+This experiment fixes all compressor messages and the Observer policy. The full
+compressor sends the correct scalar state message, while the other compressors
+carry incomplete information. The only learned object is the selection vector
+\(w\).
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{ccccc}
+\toprule
+\(K\) & Reward & \(P(\mathrm{full})\) & Correct-action prob. & Missed@0.90 \\
+\midrule
+32 & 0.962 & 1.000 & 0.965 & 0.00 \\
+\bottomrule
+\end{tabular}
+\caption{One-to-many selection-only experiment. Messages and policy are fixed,
+and only the Observer's compressor-selection probabilities are learned.}
+\label{tab:one-to-many-w-only}
+\end{table}
+
+\subsection{Policy Only: Learn \(\theta\), Fixed Correct Message and Full Selection}
+
+This experiment fixes selection to the full compressor and fixes the message to
+the correct scalar state value. The Observer only learns the policy
+\(\pi_\theta(a\mid m)\).
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{cccccc}
+\toprule
+\(K\) & \(A\) & Reward & \(P(\mathrm{full})\) & Correct-action prob. & Missed@0.90 \\
+\midrule
+128 & 32 & 1.000 & 1.000 & 1.000 & 0.00 \\
+\bottomrule
+\end{tabular}
+\caption{One-to-many policy-only experiment. Selection and messages are fixed,
+and only the Observer policy is learned.}
+\label{tab:one-to-many-theta-only}
+\end{table}
+
+\subsection{Selection and Compression: Learn \(\phi,w\), Fixed Policy}
+
+This experiment keeps the Observer policy fixed to the distance-based softmax
+policy from the one-to-one scalar-compression experiment. The learned objects are the selection logits
+\(w\) and the selected compressor's message parameters \(\phi_{k_t}\). This
+tests whether the Observer learns to listen to the full-information compressor
+and whether that compressor learns the scalar sum message.
+
+\reportfigure{updated_section_5_2_same_timescale_k16_eps020_alpha0003_300k_curves}
+  {One-to-many learning at \(K=16\) with a fixed Observer policy. The same
+  learning rate is used for selection and compression. The full-compressor
+  probability moves close to one, and the scalar message becomes usable by the
+  fixed policy.}
+  {fig:section5-2-k16}
+
+\reportfigure{updated_section_5_2_same_timescale_k16_eps020_alpha0003_300k_final_selection_messages}
+  {One-to-many selection and compression at \(K=16\). The selection probability is
+  concentrated on the full-information compressor, and the full compressor's
+  scalar messages follow the state order.}
+  {fig:section5-2-k16-final-messages}
+
+\begin{table}[H]
+\centering
+\small
+\resizebox{\linewidth}{!}{%
+\begin{tabular}{cccccccc}
+\toprule
+\(K\) & Steps & lr & \(\epsilon_w\) & End expected & \(P(\mathrm{full})\) & Missed states & Success \\
+\midrule
+8  & 120k  & 0.010 & 0.05 & 0.967 & 0.996 & 0.00 & 1.00 \\
+16 & 300k  & 0.003 & 0.20 & 0.963 & 0.997 & 0.00 & 1.00 \\
+\bottomrule
+\end{tabular}
+}
+\caption{One-to-many fixed-policy results over 5 seeds. Selection and
+compression use the same learning rate.}
+\label{tab:section5-2-scalar-sum}
+\end{table}
+
+Selection and compression work through \(K=16\) in this same-timescale setting.
+The full-compressor probability moves close to one, and the selected full
+compressor learns a scalar message that the fixed policy can use.
+
+\subsection{Selection and Policy: Learn \(w,\theta\), Fixed Correct Messages}
+
+This experiment fixes the compressor messages. The full compressor sends the
+correct scalar state message, and the Observer learns both its selection
+probabilities and its policy.
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{ccccccc}
+\toprule
+\(K\) & \(A\) & Reward & \(P(\mathrm{full})\) & Correct-action prob. & Msg MAE & Missed@0.90 \\
+\midrule
+128 & 32 & 0.971 & 0.973 & 1.000 & 0.000 & 0.00 \\
+\bottomrule
+\end{tabular}
+\caption{One-to-many selection-and-policy experiment. Messages are fixed, while
+selection and policy are learned.}
+\label{tab:one-to-many-w-theta}
+\end{table}
+
+\subsection{Compression and Policy: Learn \(\phi,\theta\), Fixed Full Selection}
+
+This experiment fixes selection to the full compressor and learns both the
+scalar message and the policy from reward.
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{cccccc}
+\toprule
+\(K\) & \(A\) & Reward & Correct-action prob. & Msg MAE & Missed@0.90 \\
+\midrule
+128 & 32 & 0.999 & 0.983 & 0.145 & 0.00 \\
+\bottomrule
+\end{tabular}
+\caption{One-to-many compression-and-policy experiment. Selection is fixed to
+the full compressor.}
+\label{tab:one-to-many-phi-theta}
+\end{table}
+
+\subsection{Full Learning: Learn \(\phi,w,\theta\)}
+
+This experiment learns all three imperfect-state objects together: scalar
+compression, compressor selection, and Observer policy.
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{ccccccc}
+\toprule
+\(K\) & \(A\) & Reward & \(P(\mathrm{full})\) & Correct-action prob. & Msg MAE & Missed@0.90 \\
+\midrule
+128 & 32 & 0.969 & 0.973 & 0.966 & 0.158 & 0.00 \\
+\bottomrule
+\end{tabular}
+\caption{Full one-to-many imperfect-state experiment. Compression, selection,
+and policy are learned together.}
+\label{tab:one-to-many-full}
+\end{table}
+
+The one-to-many results show the intended ladder. Compression alone, selection
+alone, and policy alone each learn. The two-object experiments also learn under
+the fixed third object. The full experiment reaches high reward while preserving
+the scalar state-message interpretation.
+
+\section{Imperfect State with Multiple Actor-Compressors and Multiple Observers}
+
+This section is the group imperfect-state setting in the updated paper. There
+are three Observers and three Actor-compressors. Each Observer \(i\) has its
+own selection logits \(w_i\) over compressors and its own policy
+\(\pi_{\theta_i}(a\mid m)\). At each state, every Observer samples a compressor,
+receives that compressor's scalar message, and acts. If several Observers
+select the same compressor, that compressor receives feedback through all of
+those selected paths.
+
+\subsection{Compression Only: Learn \(\phi\), Fixed Full Selection and Fixed Policy}
+
+This experiment fixes every Observer to select the full-information compressor
+and fixes every Observer policy. The learned object is the full compressor's
+message rule \(f_{\phi_2}\).
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{ccccc}
+\toprule
+\(K\) & Reward & \(P(\mathrm{full})\) & Correct-action prob. & Missed@0.90 \\
+\midrule
+32 & 0.963 & 1.000 & 0.966 & 0.00 \\
+\bottomrule
+\end{tabular}
+\caption{Many-to-many compression-only experiment with fixed full selection and
+fixed policies.}
+\label{tab:many-to-many-phi-only}
+\end{table}
+
+\subsection{Selection Only: Learn \(w\), Fixed Correct Messages and Fixed Policy}
+
+This experiment fixes the compressor messages and policies. Each Observer learns
+only its compressor-selection probabilities.
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{ccccc}
+\toprule
+\(K\) & Reward & \(P(\mathrm{full})\) & Correct-action prob. & Missed@0.90 \\
+\midrule
+32 & 0.962 & 1.000 & 0.965 & 0.00 \\
+\bottomrule
+\end{tabular}
+\caption{Many-to-many selection-only experiment. Messages and policies are
+fixed, and each Observer learns which compressor to select.}
+\label{tab:many-to-many-w-only}
+\end{table}
+
+\subsection{Policy Only: Learn \(\theta\), Fixed Correct Message and Full Selection}
+
+This experiment fixes each Observer to receive the correct scalar message from
+the full compressor. Each Observer only learns its policy.
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{cccccc}
+\toprule
+\(K\) & \(A\) & Reward & \(P(\mathrm{full})\) & Correct-action prob. & Missed@0.90 \\
+\midrule
+128 & 32 & 1.000 & 1.000 & 0.999 & 0.00 \\
+\bottomrule
+\end{tabular}
+\caption{Many-to-many policy-only experiment. Messages and selection are fixed,
+and the Observer policies are learned.}
+\label{tab:many-to-many-theta-only}
+\end{table}
+
+\subsection{Selection and Compression: Learn \(\phi,w\), Fixed Policy}
+
+This experiment fixes the Observer policies and learns both the scalar messages
+and the per-Observer selection probabilities.
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{ccccc}
+\toprule
+\(K\) & Reward & \(P(\mathrm{full})\) & Correct-action prob. & Missed@0.90 \\
+\midrule
+32 & 0.961 & 1.000 & 0.964 & 0.00 \\
+\bottomrule
+\end{tabular}
+\caption{Many-to-many selection-and-compression experiment with fixed policies.}
+\label{tab:many-to-many-phi-w}
+\end{table}
+
+\subsection{Selection and Policy: Learn \(w,\theta\), Fixed Correct Messages}
+
+This experiment fixes the compressor messages and learns each Observer's
+selection probabilities and policy.
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{ccccccc}
+\toprule
+\(K\) & \(A\) & Reward & \(P(\mathrm{full})\) & Correct-action prob. & Msg MAE & Missed@0.90 \\
+\midrule
+16 & 16 & 0.995 & 0.999 & 0.994 & 0.000 & 0.00 \\
+\bottomrule
+\end{tabular}
+\caption{Many-to-many selection-and-policy experiment. Messages are fixed, while
+selection and policy are learned.}
+\label{tab:many-to-many-w-theta}
+\end{table}
+
+\subsection{Compression and Policy: Learn \(\phi,\theta\), Fixed Full Selection}
+
+This experiment fixes every Observer to use the full compressor and learns the
+scalar messages and policies.
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{cccccc}
+\toprule
+\(K\) & \(A\) & Reward & Correct-action prob. & Msg MAE & Missed@0.90 \\
+\midrule
+128 & 32 & 0.999 & 0.986 & 0.130 & 0.00 \\
+\bottomrule
+\end{tabular}
+\caption{Many-to-many compression-and-policy experiment with fixed full
+selection.}
+\label{tab:many-to-many-phi-theta}
+\end{table}
+
+\subsection{Full Learning: Learn \(\phi,w,\theta\)}
+
+This experiment learns scalar compression, compressor selection, and Observer
+policy together for all Observers. This run uses
+\(\alpha_w=10^{-3}\) so that compressor selection settles within the 300k-step
+training period; the other parameters use the common learned-policy
+configuration given in the Method section.
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{ccccccc}
+\toprule
+\(K\) & \(A\) & Reward & \(P(\mathrm{full})\) & Correct-action prob. & Msg MAE & Missed@0.90 \\
+\midrule
+64 & 16 & 0.983 & 0.984 & 0.991 & 0.083 & 0.00 \\
+\bottomrule
+\end{tabular}
+\caption{Full many-to-many imperfect-state experiment. Compression, selection,
+and policy are learned together.}
+\label{tab:many-to-many-full}
+\end{table}
+
+The many-to-many experiments show the same ladder as the one-to-many
+experiments. Policy-only learning works from the correct scalar message,
+compression plus policy works when selection is fixed to the full compressor,
+and the full learned case works at \(K=64,A=16\).
+
+\section{Discussion}
+
+The experiments separate the two information problems in the paper. In the
+imperfect-reward cases, the main learned object is the Observer's following
+allocation and, in the joint cases, the Actor policy. In the imperfect-state
+cases, the learned objects are the Actor-compressor message \(f_\phi\), the
+Observer's compressor-selection probabilities \(\lambda\), and the Observer
+policy \(\pi_\theta\).
+
+The imperfect-reward experiments behave as expected in the controlled cases. With
+fixed Actor quality, the following rates move toward the higher-utility Actors
+and respect the budget. In the joint version, the Actors learn their policies
+while the Observer's utility estimates and following rates move with them. The
+group imperfect-reward case also shows the intended behavior: different
+Observers can follow different Actors when their reward functions value
+different Actors. The main scaling issue there is budget and sampling. When
+many Actors are present, each good Actor must still receive enough active
+updates and enough reported reward feedback.
+
+The imperfect-state experiments use scalar-sum messages and a distance-based
+softmax policy. The scalar-compression experiment works through \(K=64\), and
+the one-Observer selection plus compression experiment works through \(K=16\)
+in the same-timescale table. The full Actor-compressor learns a useful scalar
+message, and the Observer learns to select it. The policy scores actions
+according to distance from the scalar message to the action centers.
+
+With this policy, the one-to-one and one-to-many imperfect-state cases work in
+the reported \(K=128,A=32\) grouped-action setting. The many-to-many case works
+at \(K=64,A=16\) when compression, selection, and policy are learned together.
+
+The main results include reward and the internal learned quantities. For
+imperfect-state learning, we need to record three learned objects separately:
+whether the Actor-compressor sends useful state information, whether the
+Observer can act from that message, and whether the compressor-selection
+probabilities move toward the
+full-information compressor. The tables include internal quantities such as message
+error, message \(R^2\), correct-action probability, \(P(\mathrm{full})\), and
+missed regions. The current conclusion is that the paper mechanism works in
+the controlled subcases reported here, with the distance-based softmax policy
+used for scalar messages.
+
+\appendix
+\section{Additional Experiments}
+
+The appendix contains supporting experiments that are useful for interpreting the
+main tables: following-rate timescales, tie cases, reward-baseline variants,
+scaling experiments, and extra convergence plots.
+
+Figure \ref{fig:appendix-paper4-timescale} compares three following-rate update
+schedules on the same single-best controlled setup. The following-rate step is
+held fixed at \(\alpha_\mu=0.02\), while the utility-estimate rate is varied.
+When \(\alpha_U\) is larger, \(\hat U\) reaches the true utilities before the
+following rates have moved far. When \(\alpha_U\) is equal to or smaller than
+\(\alpha_\mu\), the same simple problem still converges, but the utility
+estimate lags and the following-rate movement is correspondingly slower. This
+supports the two-timescale convention used in the imperfect-reward
+experiments: the utility estimate should track quickly, while \(\mu\) moves
+more slowly under the budget projection.
+
+\reportfigure{paper4_1_timescale_comparison}
+  {Following-rate timescale comparison. The left panel shows mean utility-tracking
+  error, and the right panel shows the following rate on the best Actor. Larger
+  \(\alpha_U\) produces faster utility tracking before the slower
+  following-rate update reallocates the attention budget.}
+  {fig:appendix-paper4-timescale}
+
+Figure \ref{fig:appendix-tie-cases} shows tie cases. In the action
+tie, actions 0 and 1 both have reward \(1.0\), while action 2 has reward
+\(0.0\). The exact split between actions 0 and 1 is seed-dependent, but the
+low-reward action loses probability. In the Observer tie, two Observers provide
+the same useful \(x_1+x_2\) message. The probability mass moves to the useful
+set, even though the split between the two useful Observers can depend on
+stochastic history.
+
+\reportfigure{report_appendix_tie_cases}
+  {Tie-case results. Tied optimal choices may split unevenly; the required
+  behavior is that probability leaves the lower-value alternatives and
+  concentrates on the optimal set.}
+  {fig:appendix-tie-cases}
+
+\subsection*{Raw Reward and Advantage Variant}
+
+The paper's raw-reward selection update uses the raw reward multiplier
+\[
+  -r_t\log\lambda_{k_t}.
+\]
+We keep this as the main baseline. As an additional experiment, we compare it with
+a global-advantage variant
+\[
+  -A_t\log\lambda_{k_t},
+  \qquad
+  A_t=r_t-b_t,
+\]
+where \(b_t\) is a global exponential moving average of reward. The baseline
+depends only on the global reward history, so the change is the standard
+variance-reduction form with the same credit assignment rule.
+
+\reportfigure{paper5_1_advantage_positive_comparison}
+  {Raw reward versus global advantage in the positive-reward
+  setup. Both updates concentrate on the known best Observer. The advantage
+  update changes the logit path and ends with almost the same end-of-run selection
+  probability.}
+  {fig:appendix-advantage-positive}
+
+\reportfigure{paper5_1_advantage_summary}
+  {Summary of the raw-reward and advantage comparison across
+  selected conditions. The two updates are close in the original low-offset
+  task, but the advantage update is more stable when rewards contain a large
+  common positive offset.}
+  {fig:appendix-advantage-summary}
+
+\begin{table}[H]
+\centering
+\small
+\resizebox{\linewidth}{!}{%
+\begin{tabular}{llccccc}
+\toprule
+Condition & Update & Final reward & Final \(P(\text{best})\) &
+Cumulative regret & Step to \(P(\text{best})>0.8\) & \(P(\text{best})\) std \\
+\midrule
+positive, gap \(1\) & raw reward & 0.958 & 0.995 & 116.1 & 231.0 & 0.001 \\
+positive, gap \(1\) & advantage & 0.958 & 0.994 & 110.3 & 245.0 & 0.000 \\
+offset \(5\), gap \(1\) & raw reward & 5.958 & 0.996 & 655.5 & 1149.4 & 0.002 \\
+offset \(5\), gap \(1\) & advantage & 5.958 & 0.994 & 117.9 & 238.0 & 0.000 \\
+offset \(20\), gap \(1\) & raw reward & 20.580 & 0.400 & 2097.5 & 208.8 & 0.490 \\
+offset \(20\), gap \(1\) & advantage & 20.958 & 0.995 & 151.1 & 276.6 & 0.001 \\
+offset \(5\), gap \(0.1\) & raw reward & 5.068 & 0.598 & 186.7 & 1394.2 & 0.486 \\
+offset \(5\), gap \(0.1\) & advantage & 5.091 & 0.925 & 76.9 & 2298.0 & 0.011 \\
+offset \(5\), gap \(1\), noise \(2\) & raw reward & 5.796 & 0.799 & 1005.7 & 1143.8 & 0.399 \\
+offset \(5\), gap \(1\), noise \(2\) & advantage & 5.940 & 0.996 & 144.7 & 241.6 & 0.002 \\
+quality hard & raw reward & 0.474 & 0.972 & 86.8 & 1125.4 & 0.005 \\
+quality hard & advantage & 0.474 & 0.970 & 83.2 & 1105.0 & 0.006 \\
+\bottomrule
+\end{tabular}
+}
+\caption{Raw-reward versus global-advantage comparison over 5
+seeds. The offset conditions add the same constant to all rewards, so the
+best Observer is unchanged.}
+\label{tab:appendix-advantage}
+\end{table}
+
+In the original low-offset selection task, the raw-reward and advantage
+updates are nearly identical. The reward scale is small, the best Observer is
+well separated, and the raw estimator has little variance to remove. The
+difference appears when the reward table contains a large common positive
+offset, such as rewards near \(20\) versus \(21\). That offset leaves the best
+Observer unchanged and contributes little useful gradient in expectation, but it
+multiplies the sampled log-probability and makes the raw update noisy.
+The global advantage subtracts most of this common component. In the
+offset-\(20\), gap-\(1\) test, raw reward ends with
+\(P(\mathrm{best})=0.400\) and high seed variance, while the advantage update
+ends with \(P(\mathrm{best})=0.995\). The step-to-threshold column can be
+misleading in these offset runs because the raw update can briefly cross the
+threshold and later move to a different Observer. The end-of-run best-Observer
+probability, seed variance, and cumulative regret give the more useful
+comparison.
+
+The paper update should remain the raw-reward form because it is the simpler
+baseline and matches the stated raw-reward rule. The advantage form is useful
+as an appendix variance-reduction variant for reward designs with large common
+offsets, small quality gaps, or high reward noise.
+
+\subsection*{Imperfect-Reward Joint Scaling Experiments}
+\label{appendix:imperfect-reward-joint-scaling}
+
+This subsection folds in the imperfect-reward scaling experiments. The
+setting is still the reward-following track. One Observer watches
+many Actors. Two Actors are genuinely good: they see the state and can learn a
+state-dependent policy. The other Actors are blind distractors: their input is
+zeroed, so they can only learn one constant action. The Observer has following
+budget \(B\), assigns following rates \(\mu_j\), and reports reward to Actor
+\(j\) with probability
+\[
+  \theta(\mu_j)=1-e^{-c\mu_j}.
+\]
+A good Actor only takes a policy-gradient step when this report happens.
+
+The earlier one-axis experiments were mostly stable. Scaling states alone worked.
+Scaling the actor crowd alone mostly worked. The hard case was scaling states
+and Actors together at a fixed budget. On a ladder from 16 states and 8 Actors
+to 144 states and 128 Actors, good-Actor accuracy and budget concentration both
+dropped sharply.
+
+\reportfigure{scaling_states_actors_summary}
+  {Joint state-and-Actor scaling at fixed budget \(B=2\). Good-Actor accuracy,
+  budget concentration, and the concentration-weighted system score all drop
+  sharply past the 64-state and 32-Actor rung.}
+  {fig:appendix-joint-cliff}
+
+\reportfigure{scaling_states_actors_curves}
+  {Joint state-and-Actor scaling trajectories. The large-rung curves show the
+  cliff throughout training and at the end of the run.}
+  {fig:appendix-joint-cliff-curves}
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{ccccc}
+\toprule
+States & Actors & Good-Actor accuracy & Budget concentration & System score \\
+\midrule
+16  & 8   & 1.000 & 0.935 & 0.952 \\
+36  & 16  & 0.917 & 0.839 & 0.816 \\
+64  & 32  & 0.635 & 0.531 & 0.476 \\
+100 & 64  & 0.302 & 0.052 & 0.258 \\
+144 & 128 & 0.262 & 0.000 & 0.250 \\
+\bottomrule
+\end{tabular}
+\caption{Joint imperfect-reward scaling at fixed \(B=2\), 60000 steps, and 3
+seeds. Good-Actor accuracy is the actual policy-learning metric. Budget
+concentration is the fraction of following budget on the two good Actors.}
+\label{tab:appendix-ir-joint-cliff}
+\end{table}
+
+\textbf{Perfect-reward sanity experiment.} The first experiment hard-codes the report
+probability to one. This means every acting Actor always receives its reward
+feedback. It is the \(B\to\infty\) limit of the reporting rule, so it gives a
+ceiling for what the imperfect-reward mechanism should approach when reporting
+is frequent enough. With perfect reward, the joint cliff mostly disappears:
+accuracy stays high where the fixed-budget run falls near chance.
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{rrcc}
+\toprule
+states & actors & perfect good-acc & \(B=2\) good-acc \\
+\midrule
+16  & 8   & 1.000 & 1.000 \\
+36  & 16  & 0.986 & 0.907 \\
+64  & 32  & 0.785 & 0.638 \\
+100 & 64  & 0.792 & 0.302 \\
+144 & 128 & 0.707 & 0.262 \\
+\bottomrule
+\end{tabular}
+\caption{Perfect reward versus \(B=2\) along the joint ladder. Perfect reward
+removes the sharp cliff, showing that the update rule has enough signal when
+reward reports are frequent.}
+\label{tab:appendix-ir-perfect-reward}
+\end{table}
+
+\textbf{Budget experiment.} At the collapsed 100-state and 64-Actor rung, increasing
+\(B\) raises the report probability on good Actors and raises good-Actor
+accuracy toward the perfect-reward ceiling. This also explains the earlier
+confusion about concentration: concentration can fall when \(B\) is larger
+because the budget is spread over more Actors, but good-Actor accuracy still
+improves.
+
+\reportfigure{reward_budget_sanity_summary}
+  {Budget experiment at 100 states and 64 Actors. As \(B\) grows, report probability
+  on the good Actors and good-Actor accuracy rise toward the perfect-reward
+  line.}
+  {fig:appendix-ir-budget-experiment}
+
+\reportfigure{reward_budget_sanity_trajectories}
+  {Budget experiment trajectories at 100 states and 64 Actors. Higher budget gives
+  the good Actors more reward reports during training, and their accuracy
+  improves with that extra feedback.}
+  {fig:appendix-ir-budget-trajectories}
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{lcccc}
+\toprule
+condition & report prob. good & good-acc & concentration & system score \\
+\midrule
+perfect \((\theta=1)\) & 1.000 & 0.803 & 0.673 & 0.627 \\
+\(B=2\)   & 0.048 & 0.302 & 0.052 & 0.258 \\
+\(B=8\)   & 0.420 & 0.635 & 0.152 & 0.327 \\
+\(B=32\)  & 0.703 & 0.788 & 0.077 & 0.292 \\
+\(B=128\) & 0.940 & 0.793 & 0.044 & 0.274 \\
+\bottomrule
+\end{tabular}
+\caption{Budget experiment at 100 states and 64 Actors. ``Report prob. good'' is the
+mean reward-report probability for the two good Actors.}
+\label{tab:appendix-ir-budget-experiment}
+\end{table}
+
+\textbf{Learning-rate experiment.} Peter's main instruction was to look at the
+learning-rate curve before calling a case broken. Bo therefore swept the Actor
+learning rate under perfect reward at the same 100-state and 64-Actor rung. The
+curve has the expected shape: too small crawls, the middle range works best,
+and too large locks into a bad policy.
+
+\reportfigure{learning_rate_experiment_trajectories}
+  {Good-Actor accuracy over training for each Actor learning rate under perfect
+  reward. The middle rates climb; the largest rate moves badly and settles near
+  chance.}
+  {fig:appendix-ir-lr-trajectory}
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{rcc}
+\toprule
+learning rate & good-acc & late wobble \\
+\midrule
+0.001 & 0.623 & 0.028 \\
+0.003 & 0.813 & 0.017 \\
+0.010 & 0.803 & 0.035 \\
+0.030 & 0.748 & 0.046 \\
+0.100 & 0.250 & 0.000 \\
+\bottomrule
+\end{tabular}
+\caption{Actor learning-rate experiment under perfect reward at 100 states and 64
+Actors. Late wobble is the standard deviation of accuracy over late snapshots.}
+\label{tab:appendix-ir-lr}
+\end{table}
+
+\textbf{Actor-selection dilution.} Even under perfect reward, uniform Actor
+sampling gives each good Actor only a small share of the active updates in a
+fixed-length run. With 64 Actors, the two good Actors together receive only 2
+out of 64 turns under uniform sampling. Giving the good Actors more turn
+probability closes most of the residual gap.
+
+\reportfigure{actor_selection_experiment}
+  {Good-Actor accuracy versus the selection mass placed on the good Actors.
+  The dotted line is the uniform 2 out of 64 baseline. More turns per good Actor
+  recover near-perfect accuracy.}
+  {fig:appendix-ir-actor-selection}
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{rrc}
+\toprule
+good-Actor selection share & turns per good Actor & good-acc \\
+\midrule
+0.031 \;(uniform 2 out of 64) & 938   & 0.813 \\
+0.10                         & 3000  & 0.968 \\
+0.25                         & 7500  & 0.977 \\
+0.50                         & 15000 & 0.962 \\
+\bottomrule
+\end{tabular}
+\caption{Perfect reward, 100 states and 64 Actors, learning rate \(0.003\). The
+residual gap is mostly the number of turns each good Actor gets.}
+\label{tab:appendix-ir-selection-dilution}
+\end{table}
+
+\textbf{Putting it together.} With learning rate \(0.003\), budget \(B=32\),
+and enough total steps, the once-collapsed rung works again under the ordinary
+imperfect-reporting rule.
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{rccc}
+\toprule
+steps & report prob. good & good-acc & system score \\
+\midrule
+60{,}000  & 0.629 & 0.732 & 0.280 \\
+300{,}000 & 0.743 & 0.930 & 0.308 \\
+\bottomrule
+\end{tabular}
+\caption{Imperfect reward, 100 states and 64 Actors, learning rate \(0.003\),
+\(B=32\). With enough compute the previously collapsed rung reaches 0.93
+accuracy.}
+\label{tab:appendix-ir-recovered-rung}
+\end{table}
+
+The conclusion is narrower than the first scaling read. The cliff came from
+three controllable inputs: learning rate, reporting budget, and the number of
+turns each good Actor receives. With those set correctly, the imperfect-reward
+side recovers.
+
+\textbf{Systematic per-axis stress test with scalar state ID and embedding.}
+As an additional experiment under the representation used for the imperfect-reward runs,
+Bo scaled one axis at a time. The state input is an integer ID
+\(0,\ldots,K-1\). The policy first maps that ID to a learnable embedding vector,
+then applies a linear policy head. Uniform action exploration anneals from
+\(\varepsilon=0.1\) to \(0\) over training. A row is marked
+\texttt{pass} when the settled optimal-action probability \(p_{\mathrm{opt}}\)
+is near its ceiling, \texttt{watch} when it is lower but still usable, and
+\texttt{rerun} when it needs more tuning.
+
+\textbf{States.} This experiment uses one Actor, perfect reward, and \(K\) states
+with \(K\) actions. It isolates the policy head on scalar IDs. A plain embedding
+reaches \(p_{\mathrm{opt}}=1.0\) through \(K=16\). At \(K=32\) it drops to
+\(0.833\), which is a \texttt{watch} row. The same embedding fits the diagnostic
+lookup through much larger \(K\). This points to sampled policy-gradient
+variance as the limiting factor. An MLP on the raw scalar learns less reliably
+as \(K\) grows.
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{lcccc}
+\toprule
+policy head & \(K=3\) & \(K=8\) & \(K=16\) & \(K=32\) \\
+\midrule
+scalar plus embed       & 1.000 & 1.000 & 1.000 & 0.833 \\
+scalar plus embed plus MLP1  & 1.000 & 1.000 & 0.750 & 0.271 \\
+scalar plus rbf         & 1.000 & 1.000 & 0.937 & 0.687 \\
+scalar plus MLP1, normalized & 0.889 & 0.458 & 0.187 & 0.052 \\
+scalar plus MLP2, normalized & 0.778 & 0.167 & 0.083 & 0.031 \\
+\bottomrule
+\end{tabular}
+\caption{States axis under scalar IDs: mean \(p_{\mathrm{opt}}\) over 3 seeds.
+The plain embedding is the strongest policy head in this experiment.}
+\label{tab:appendix-ir-stress-states}
+\end{table}
+
+\textbf{Actors.} This experiment uses one Observer, \(N\) Actors, and fixed
+\(K=3\). The learned objects are the following rates \(\mu\) and the Actor
+policies, as in the one-Observer imperfect-reward joint case. Mean and minimum
+\(p_{\mathrm{opt}}\) stay above \(0.996\) through \(N=32\).
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{rccc}
+\toprule
+actors \(N\) & mean \(p_{\mathrm{opt}}\) & min \(p_{\mathrm{opt}}\) & verdict \\
+\midrule
+4  & 1.000 & 1.000 & pass \\
+8  & 1.000 & 0.999 & pass \\
+16 & 0.999 & 0.999 & pass \\
+32 & 0.998 & 0.996 & pass \\
+\bottomrule
+\end{tabular}
+\caption{Actor-axis stress test: one Observer and \(N\) Actors, scalar-ID
+embedding policy, \(K=3\), 40000 steps, 3 seeds.}
+\label{tab:appendix-ir-stress-actors}
+\end{table}
+
+\textbf{Observers.} This experiment fixes 8 Actors and \(K=3\), then varies the
+number of Observers \(M\). All runs keep \(p_{\mathrm{opt}}=1.0\) through
+\(M=32\).
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{rccc}
+\toprule
+observers \(M\) & mean \(p_{\mathrm{opt}}\) & min \(p_{\mathrm{opt}}\) & verdict \\
+\midrule
+4  & 1.000 & 1.000 & pass \\
+8  & 1.000 & 1.000 & pass \\
+16 & 1.000 & 1.000 & pass \\
+32 & 1.000 & 1.000 & pass \\
+\bottomrule
+\end{tabular}
+\caption{Observer-axis stress test: 8 Actors and \(M\) Observers, scalar-ID
+embedding policy, \(K=3\), 40000 steps, 3 seeds.}
+\label{tab:appendix-ir-stress-observers}
+\end{table}
+
+Taken together, under scalar state IDs with an embedding policy head, the
+imperfect-reward system scales well when only states, only Actors, or only
+Observers change. The only \texttt{watch} row is the large-\(K\) states-axis
+policy run, and the earlier joint rung recovers once learning rate, budget, and
+per-Actor compute are set correctly.
+
+\subsection*{Imperfect-State Scaling Quantities}
+
+The imperfect-state scaling dimensions reported in the main tables are:
+\begin{itemize}
+  \item number of states and actions \(K\),
+  \item number of Observers and Actor-compressors,
+  \item whether message parameters \(\phi\), selection logits \(w\), and policy
+  parameters \(\theta\) are fixed or learned,
+  \item the number of times each state and selected compressor receives useful
+  feedback.
+\end{itemize}
+
+A missed region means a state and action region where the correct-action
+probability is below the stated threshold, usually \(0.90\) or \(0.95\). This is
+stricter than mean reward. It catches cases where average reward is high while
+one state region still has low confidence.
+
+The distance-based softmax policy uses the scalar message and supplies gradients
+to the compression function. The main imperfect-state tables report
+configurations whose reward and internal learned quantities reached the stated
+thresholds.
+
+\end{document}

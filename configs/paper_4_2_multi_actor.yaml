@@ -1,0 +1,28 @@
+case: paper_4_2_multi_actor
+
+seed: 0
+num_steps: 30000
+snapshot_interval: 200
+
+num_actors: 3
+num_states: 3
+num_actions: 3
+
+state_distribution: [0.333333333, 0.333333333, 0.333333334]
+actor_selection_probs: [0.333333333, 0.333333333, 0.333333334]
+
+reward_table:
+  - [1.0, 0.1, 0.2]
+  - [0.1, 1.0, 0.0]
+  - [0.0, 0.2, 1.0]
+
+optimal_actions: [0, 1, 2]
+
+budget: 3.0
+c: 2.0
+utility_learning_rate: 0.2
+following_learning_rate: 0.01
+# Lower than the old one-hot Softmax setting (0.2): EmbeddingPolicy on scalar
+# IDs is more sensitive to step size; 0.05 keeps all actors near-optimal.
+actor_learning_rate: 0.05
+

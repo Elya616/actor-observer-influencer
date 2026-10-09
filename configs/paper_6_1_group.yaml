@@ -1,0 +1,34 @@
+case: paper_6_1_group
+
+# Section 6.1: N Observers x N Actors, learnable following rates, fixed Actor
+# policies. Each Observer has its OWN reward function R_i, so different Observers
+# value the same Actor differently. With a single state and Actor j pinned to
+# action j, Observer i's analytic utility for Actor j is R_i[0][j]; the reward
+# tables below are "assortative" so Observer i most values Actor i, and its
+# budgeted following rate mu_i should concentrate on Actor i.
+
+seed: 0
+num_steps: 8000
+snapshot_interval: 50
+
+num_actors: 3
+num_observers: 3
+num_states: 1
+num_actions: 3
+
+state_distribution: [1.0]
+actor_selection_probs: [0.333333333, 0.333333333, 0.333333334]
+
+# observer_reward_tables[i][s][a] = R_i(s, a)
+observer_reward_tables:
+  - [[0.9, 0.4, 0.1]]   # Observer 0 most values Actor 0
+  - [[0.1, 0.9, 0.4]]   # Observer 1 most values Actor 1
+  - [[0.4, 0.1, 0.9]]   # Observer 2 most values Actor 2
+
+fixed_actor_targets: [0, 1, 2]
+actor_sharpness: 8.0
+
+budget: 2.0
+c: 1.0
+utility_learning_rate: 0.1
+following_learning_rate: 0.05

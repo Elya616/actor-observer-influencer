@@ -1,0 +1,44 @@
+case: paper_5_2_selection_compression
+
+seed: 0
+num_steps: 20000
+eval_interval: 50
+reward_window: 100
+
+num_observers: 3
+num_states: 4
+state_dim: 2
+observation_dim: 1
+num_actions: 3
+
+# Binary full-state features visible to the Observer side:
+# state 0 = (0, 0), state 1 = (1, 0), state 2 = (0, 1), state 3 = (1, 1).
+state_features:
+  - [0.0, 0.0]
+  - [1.0, 0.0]
+  - [0.0, 1.0]
+  - [1.0, 1.0]
+
+state_distribution: [0.25, 0.25, 0.25, 0.25]
+
+reward_table:
+  - [1.0, -0.1, -0.1]
+  - [-0.1, 1.0, -0.1]
+  - [-0.1, 1.0, -0.1]
+  - [-0.1, -0.1, 1.0]
+
+observer_names: [zero_input, first_feature, full_sum]
+
+# Fixed input masks. The message function after the mask remains learnable.
+observer_input_masks:
+  - [0.0, 0.0]
+  - [1.0, 0.0]
+  - [1.0, 1.0]
+
+# Single timescale: selection, compression (and actor where present) share one
+# learning rate. The selection rate was previously slowed to 0.005; per the
+# meeting we start from a single timescale for the imperfect-state cases and
+# only reintroduce a slower selection rate if there is a concrete reason.
+following_learning_rate: 0.01
+observer_learning_rate: 0.01
+decoder_sharpness: 4.0

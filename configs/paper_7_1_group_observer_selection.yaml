@@ -1,0 +1,31 @@
+case: paper_7_1_group_observer_selection
+
+seed: 0
+num_steps: 10000
+eval_interval: 100
+reward_window: 100
+
+num_actors: 3
+num_observers: 3
+num_states: 3
+observation_dim: 1
+num_actions: 3
+
+actor_selection_probs: [0.3333333333333333, 0.3333333333333333, 0.3333333333333333]
+state_distribution: [0.3333333333333333, 0.3333333333333333, 0.3333333333333333]
+
+reward_table:
+  - [1.0, -0.1, -0.1]
+  - [-0.1, 1.0, -0.1]
+  - [-0.1, -0.1, 1.0]
+
+observer_names: [zero_input, first_feature, full_state]
+
+# Fixed scalar messages by state. State targets are 0, 1, and 2.
+observer_messages:
+  - [0.0, 0.0, 0.0]
+  - [0.0, 1.0, 1.0]
+  - [0.0, 1.0, 2.0]
+
+following_learning_rate: 0.02
+decoder_sharpness: 4.0
